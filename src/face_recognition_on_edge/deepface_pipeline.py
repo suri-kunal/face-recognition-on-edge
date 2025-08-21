@@ -3,6 +3,7 @@ Simplified Face Recognition Pipeline using DeepFace
 Integrates MediaPipe for face detection and DeepFace for recognition
 """
 
+import traceback
 import cv2
 import numpy as np
 from typing import List, Dict, Tuple, Optional
@@ -110,7 +111,7 @@ class DeepFacePipeline:
                 img2_path=temp_face_path,
                 model_name=model,
                 distance_metric=self.SUPPORTED_MODELS[model]['distance_metric'],
-                enforce_detection=False  # We already detected faces
+                enforce_detection=True  # We already detected faces
             )
             
             # Clean up temp file
@@ -134,7 +135,7 @@ class DeepFacePipeline:
             }
             
         except Exception as e:
-            logger.error(f"Error in DeepFace comparison with {model}: {e}")
+            logger.error(f"Error in DeepFace comparison with {model}: {traceback.print_exc()}")
             return {
                 'model': model,
                 'distance': float('inf'),
