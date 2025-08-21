@@ -13,6 +13,7 @@ dependencies = [
     "kagglehub>=0.3.12",
     "matplotlib>=3.10.5",
     "mediapipe>=0.10.21",
+    "memory-profiler>=0.61.0",
     "numpy>=1.26.4",
     "onnxruntime>=1.22.1",
     "opencv-python>=4.11.0.86",

@@ -26,10 +26,11 @@ def main():
         print(f"Error: Group photo '{group_photo}' not found!")
         sys.exit(1)
     
-    # Initialize pipeline with multiple models
+    # Initialize optimized pipeline with model preloading
     pipeline = DeepFacePipeline(
         models=['ArcFace', 'Facenet', 'VGG-Face'],  # Test 3 different models
-        detection_confidence=0.5
+        detection_confidence=0.5,
+        preload_models=True  # Enable model caching for better memory efficiency
     )
     
     # Run recognition

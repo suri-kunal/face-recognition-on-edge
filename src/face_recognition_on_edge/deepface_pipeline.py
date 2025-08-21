@@ -9,13 +9,21 @@ import numpy as np
 from typing import List, Dict, Tuple, Optional
 import logging
 import os
+import gc
 from pathlib import Path
 
 from deepface import DeepFace
+from deepface.modules import modeling
 from .face_detector import FaceDetector
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Memory profiler decorator - only use if available
+import builtins
+if not hasattr(builtins, 'profile'):
+    def profile(func):
+        return func
 
 
 class DeepFacePipeline:
@@ -38,7 +46,8 @@ class DeepFacePipeline:
                  models: List[str] = ['ArcFace'],
                  detection_confidence: float = 0.5,
                  target_face_size: Tuple[int, int] = (112, 112),
-                 custom_thresholds: Optional[Dict[str, float]] = None):
+                 custom_thresholds: Optional[Dict[str, float]] = None,
+                 preload_models: bool = True):
         """
         Initialize the simplified pipeline
         
@@ -47,6 +56,7 @@ class DeepFacePipeline:
             detection_confidence: Confidence threshold for face detection
             target_face_size: Target size for cropped faces
             custom_thresholds: Optional custom thresholds for models
+            preload_models: Whether to preload models for better performance
         """
         # Validate models
         for model in models:
@@ -56,6 +66,7 @@ class DeepFacePipeline:
         self.models = models
         self.face_detector = FaceDetector(min_detection_confidence=detection_confidence)
         self.target_face_size = target_face_size
+        self.preload_models = preload_models
         
         # Set thresholds (custom or default)
         self.thresholds = {}
@@ -65,8 +76,42 @@ class DeepFacePipeline:
             else:
                 self.thresholds[model] = self.SUPPORTED_MODELS[model]['threshold']
         
+        # Preload models to avoid repeated loading during comparisons
+        self.cached_models = {}
+        if preload_models:
+            self._preload_models()
+        
         logger.info(f"DeepFace pipeline initialized with models: {models}")
         logger.info(f"Thresholds: {self.thresholds}")
+        logger.info(f"Model preloading: {'enabled' if preload_models else 'disabled'}")
+    
+    def _preload_models(self):
+        """
+        Preload all DeepFace models to avoid loading them repeatedly during comparisons
+        This reduces memory usage spikes and improves performance
+        """
+        logger.info("Preloading DeepFace models...")
+        
+        for model in self.models:
+            try:
+                logger.info(f"Loading model: {model}")
+                
+                # Load the model using DeepFace's modeling module
+                # This caches the model internally in DeepFace
+                model_obj = modeling.build_model("facial_recognition", model)
+                self.cached_models[model] = model_obj
+                
+                logger.info(f"Successfully loaded model: {model}")
+                
+            except Exception as e:
+                logger.error(f"Failed to preload model {model}: {e}")
+                # Continue with other models even if one fails
+                continue
+        
+        logger.info(f"Preloaded {len(self.cached_models)} models successfully")
+        
+        # Force garbage collection after preloading
+        gc.collect()
     
     def detect_and_crop_faces(self, group_photo_path: str) -> List[np.ndarray]:
         """
@@ -100,12 +145,13 @@ class DeepFacePipeline:
         Returns:
             Dictionary with comparison results
         """
+        temp_face_path = None
         try:
             # Save cropped face temporarily for DeepFace
-            temp_face_path = "temp_face.jpg"
+            temp_face_path = f"temp_face_{model}_{id(cropped_face)}.jpg"
             cv2.imwrite(temp_face_path, cropped_face)
             
-            # Use DeepFace to verify
+            # Use DeepFace to verify (models are already cached if preloading is enabled)
             result = DeepFace.verify(
                 img1_path=probe_image_path,
                 img2_path=temp_face_path,
@@ -114,10 +160,6 @@ class DeepFacePipeline:
                 enforce_detection=True  # We already detected faces
             )
             
-            # Clean up temp file
-            if os.path.exists(temp_face_path):
-                os.remove(temp_face_path)
-            
             # Apply our threshold
             custom_threshold = self.thresholds[model]
             distance = result['distance']
@@ -125,7 +167,7 @@ class DeepFacePipeline:
             # For cosine distance, lower is more similar
             is_match = distance < custom_threshold
             
-            return {
+            comparison_result = {
                 'model': model,
                 'distance': distance,
                 'threshold': custom_threshold,
@@ -133,6 +175,11 @@ class DeepFacePipeline:
                 'deepface_verified': result['verified'],  # DeepFace's own decision
                 'success': True
             }
+            
+            # Force garbage collection after each comparison to free memory
+            gc.collect()
+            
+            return comparison_result
             
         except Exception as e:
             logger.error(f"Error in DeepFace comparison with {model}: {traceback.print_exc()}")
@@ -145,7 +192,15 @@ class DeepFacePipeline:
                 'success': False,
                 'error': str(e)
             }
+        finally:
+            # Always clean up temp file
+            if temp_face_path and os.path.exists(temp_face_path):
+                try:
+                    os.remove(temp_face_path)
+                except:
+                    pass  # Ignore cleanup errors
     
+    @profile
     def recognize_face(self, probe_image_path: str, group_photo_path: str) -> Dict:
         """
         Complete face recognition pipeline using DeepFace
@@ -220,9 +275,15 @@ class DeepFacePipeline:
                     model_results['match_found'] = best_comparison['is_match']
                 
                 results_by_model[model] = model_results
+                
+                # Force garbage collection after each model to reduce memory buildup
+                gc.collect()
             
             # Overall summary
             any_match = any(results['match_found'] for results in results_by_model.values())
+            
+            # Final cleanup
+            gc.collect()
             
             return {
                 'success': True,
